@@ -1,0 +1,217 @@
+package rig
+
+import (
+	"embed"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	AwarenessSkillName        = "codex-rig-awareness"
+	RigInstructionFileName    = "AGENTS.rig.md"
+	GeneratedOverrideFileName = "AGENTS.override.md"
+)
+
+//go:embed bundled/codex-rig-awareness/SKILL.md
+var bundledSkillFS embed.FS
+
+type InstructionMetadata struct {
+	GlobalSourcePath      string
+	RigFragmentPath       string
+	GeneratedOverridePath string
+}
+
+func EnsureRigBootstrap(store *Store, cfg RigConfig) error {
+	if err := EnsurePolicyState(store, cfg); err != nil {
+		return err
+	}
+	if err := EnsureBundledAwarenessSkill(store, cfg); err != nil {
+		return err
+	}
+	if err := EnsureRigInstructions(store, cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func EnsureBundledAwarenessSkill(store *Store, cfg RigConfig) error {
+	skillDir := filepath.Join(store.RigDir(cfg.Name), "bundled-skills", AwarenessSkillName)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return err
+	}
+
+	rawSkill, err := bundledSkillFS.ReadFile("bundled/codex-rig-awareness/SKILL.md")
+	if err != nil {
+		return err
+	}
+	skillFilePath := filepath.Join(skillDir, "SKILL.md")
+	if err := writeFileIfChanged(skillFilePath, rawSkill, 0o644); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(store.RigCodexHome(cfg.Name), 0o755); err != nil {
+		return err
+	}
+	configPath := filepath.Join(store.RigCodexHome(cfg.Name), "config.toml")
+	if err := ensureSkillConfigEntry(configPath, skillFilePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func EnsureRigInstructions(store *Store, cfg RigConfig) error {
+	meta, err := GetInstructionMetadata(store, cfg.Name)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(meta.RigFragmentPath), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(meta.RigFragmentPath); os.IsNotExist(err) {
+		template := []byte("# Rig-specific Codex instructions\n# Add rig-only guidance here.\n")
+		if writeErr := os.WriteFile(meta.RigFragmentPath, template, 0o644); writeErr != nil {
+			return writeErr
+		}
+	} else if err != nil {
+		return err
+	}
+
+	globalInstructions := ""
+	if meta.GlobalSourcePath != "" {
+		rawGlobal, readErr := os.ReadFile(meta.GlobalSourcePath)
+		if readErr != nil {
+			return readErr
+		}
+		globalInstructions = strings.TrimSpace(string(rawGlobal))
+	}
+
+	rawRig, err := os.ReadFile(meta.RigFragmentPath)
+	if err != nil {
+		return err
+	}
+	rigInstructions := strings.TrimSpace(string(rawRig))
+
+	merged := renderMergedInstructions(meta.GlobalSourcePath, globalInstructions, meta.RigFragmentPath, rigInstructions)
+	if err := os.MkdirAll(filepath.Dir(meta.GeneratedOverridePath), 0o755); err != nil {
+		return err
+	}
+	return writeFileIfChanged(meta.GeneratedOverridePath, []byte(merged), 0o644)
+}
+
+func GetInstructionMetadata(store *Store, rigName string) (InstructionMetadata, error) {
+	rigCodexHome := store.RigCodexHome(rigName)
+	globalCodexHome, err := resolveGlobalInstructionHome(store, rigName)
+	if err != nil {
+		return InstructionMetadata{}, err
+	}
+	globalSource, err := firstNonEmptyInstructionFile(globalCodexHome)
+	if err != nil {
+		return InstructionMetadata{}, err
+	}
+	return InstructionMetadata{
+		GlobalSourcePath:      globalSource,
+		RigFragmentPath:       filepath.Join(store.RigDir(rigName), RigInstructionFileName),
+		GeneratedOverridePath: filepath.Join(rigCodexHome, GeneratedOverrideFileName),
+	}, nil
+}
+
+func resolveGlobalInstructionHome(store *Store, rigName string) (string, error) {
+	globalHome := filepath.Clean(store.GlobalCodexHome)
+	rigHome := filepath.Clean(store.RigCodexHome(rigName))
+	if globalHome != rigHome {
+		return globalHome, nil
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	fallback := filepath.Join(userHome, ".codex")
+	return fallback, nil
+}
+
+func firstNonEmptyInstructionFile(codexHome string) (string, error) {
+	candidates := []string{
+		filepath.Join(codexHome, "AGENTS.override.md"),
+		filepath.Join(codexHome, "AGENTS.md"),
+	}
+	for _, path := range candidates {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		if strings.TrimSpace(string(raw)) == "" {
+			continue
+		}
+		return path, nil
+	}
+	return "", nil
+}
+
+func renderMergedInstructions(globalSourcePath, globalInstructions, rigPath, rigInstructions string) string {
+	sections := make([]string, 0, 2)
+	if strings.TrimSpace(globalInstructions) != "" {
+		header := "## Global Instructions"
+		if globalSourcePath != "" {
+			header = fmt.Sprintf("## Global Instructions (%s)", globalSourcePath)
+		}
+		sections = append(sections, header+"\n\n"+globalInstructions)
+	}
+
+	rigHeader := "## Rig Instructions"
+	if rigPath != "" {
+		rigHeader = fmt.Sprintf("## Rig Instructions (%s)", rigPath)
+	}
+	if strings.TrimSpace(rigInstructions) == "" {
+		rigInstructions = "# Add rig-specific instructions to AGENTS.rig.md"
+	}
+	sections = append(sections, rigHeader+"\n\n"+rigInstructions)
+
+	body := strings.Join(sections, "\n\n")
+	return strings.TrimSpace("# Generated By codex-rig\n\nDo not edit this file directly. Edit AGENTS.rig.md for rig-specific guidance.\n\n"+body+"\n") + "\n"
+}
+
+func ensureSkillConfigEntry(configPath, skillFilePath string) error {
+	cleanSkillPath := filepath.Clean(skillFilePath)
+	entryPath := fmt.Sprintf("path = %q", cleanSkillPath)
+
+	raw := []byte{}
+	if existing, err := os.ReadFile(configPath); err == nil {
+		raw = existing
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	content := string(raw)
+	if strings.Contains(content, entryPath) {
+		return nil
+	}
+
+	block := strings.TrimSpace(fmt.Sprintf(`# codex-rig bundled awareness skill
+[[skills.config]]
+path = %q
+enabled = true
+`, cleanSkillPath)) + "\n"
+
+	if strings.TrimSpace(content) == "" {
+		return os.WriteFile(configPath, []byte(block), 0o644)
+	}
+	updated := strings.TrimRight(content, "\n") + "\n\n" + block
+	return os.WriteFile(configPath, []byte(updated), 0o644)
+}
+
+func writeFileIfChanged(path string, content []byte, mode os.FileMode) error {
+	existing, err := os.ReadFile(path)
+	if err == nil {
+		if string(existing) == string(content) {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, content, mode)
+}

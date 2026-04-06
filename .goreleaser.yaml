@@ -1,0 +1,53 @@
+project_name: codex-rig
+
+builds:
+  - main: ./cmd/codex-rig
+    binary: codex-rig
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: edimuj
+    name: codex-rig
+  header: |
+    ## Install
+
+    ```bash
+    # macOS / Linux
+    curl -fsSL https://raw.githubusercontent.com/edimuj/codex-rig/main/install.sh | sh
+
+    # Or with Go
+    go install github.com/edimuj/codex-rig/cmd/codex-rig@latest
+    ```
+

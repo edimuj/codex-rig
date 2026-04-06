@@ -1,0 +1,28 @@
+# Binaries
+codex-rig
+
+# Build artifacts
+bin/
+dist/
+
+# Editors/OS
+.DS_Store
+
+# Meta folder used to share files between my devices
+share/
+
+# IDE stuff
+.idea
+
+# Non-public stuff
+.dev/
+.private/
+
+# AI Agents stuff
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
+
+# Local symlink
+share
