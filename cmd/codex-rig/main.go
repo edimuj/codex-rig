@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/edimuj/codex-rig/internal/rig"
 )
@@ -68,6 +69,10 @@ func run(args []string) error {
 		return runInstructions(args[1:])
 	case "rc":
 		return runRC(args[1:])
+	case "export":
+		return runExport(args[1:])
+	case "import":
+		return runImport(args[1:])
 	case "help", "--help", "-h":
 		printUsage()
 		return nil
@@ -605,6 +610,92 @@ func runRC(args []string) error {
 	}
 }
 
+func runExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	rigName := fs.String("rig", "", "rig name override")
+	output := fs.String("output", "", "bundle output path (.tgz)")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: codex-rig export [--rig <name>] [--output <path>]")
+	}
+
+	ctx, err := newCommandContext()
+	if err != nil {
+		return err
+	}
+	targetRig, err := resolveTargetRig(ctx, *rigName)
+	if err != nil {
+		return err
+	}
+	cfg, err := ctx.store.LoadRig(targetRig)
+	if err != nil {
+		return err
+	}
+
+	bundlePath := strings.TrimSpace(*output)
+	if bundlePath == "" {
+		stamp := time.Now().UTC().Format("20060102-150405")
+		bundlePath = fmt.Sprintf("%s-%s.codex-rig.tgz", cfg.Name, stamp)
+	}
+	if !filepath.IsAbs(bundlePath) {
+		bundlePath = filepath.Join(ctx.cwd, bundlePath)
+	}
+	manifest, err := rig.ExportRig(ctx.store, cfg, bundlePath, version)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("rig=%s\n", cfg.Name)
+	fmt.Printf("bundle=%s\n", bundlePath)
+	fmt.Printf("bundle_version=%d\n", manifest.Version)
+	return nil
+}
+
+func runImport(args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	name := fs.String("name", "", "target rig name override")
+	overwrite := fs.Bool("overwrite", false, "overwrite existing rig with same name")
+	setCurrent := fs.Bool("set-current", false, "set imported rig as current rig")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: codex-rig import [--name <name>] [--overwrite] [--set-current] <bundle>")
+	}
+
+	ctx, err := newCommandContext()
+	if err != nil {
+		return err
+	}
+
+	bundlePath := fs.Arg(0)
+	if !filepath.IsAbs(bundlePath) {
+		bundlePath = filepath.Join(ctx.cwd, bundlePath)
+	}
+
+	cfg, err := rig.ImportRig(ctx.store, bundlePath, *name, *overwrite)
+	if err != nil {
+		return err
+	}
+	if *setCurrent {
+		if err := ctx.store.SetCurrentRig(cfg.Name); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("rig=%s\n", cfg.Name)
+	fmt.Printf("bundle=%s\n", bundlePath)
+	fmt.Printf("import_state=ok\n")
+	if *setCurrent {
+		fmt.Println("current_rig=updated")
+	}
+	return nil
+}
+
 func runRCShow(args []string) error {
 	fs := flag.NewFlagSet("rc", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -1010,6 +1101,8 @@ Usage:
   codex-rig rc set <rig>
   codex-rig rc init [--rig <name>]
   codex-rig rc clear
+  codex-rig export [--rig <name>] [--output <path>]
+  codex-rig import [--name <name>] [--overwrite] [--set-current] <bundle>
   codex-rig doctor
   codex-rig diff [--rig <name>] [--all]
   codex-rig version

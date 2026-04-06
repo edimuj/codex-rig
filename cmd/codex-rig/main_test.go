@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/edimuj/codex-rig/internal/rig"
 )
 
 func TestRCSetAndClear(t *testing.T) {
@@ -106,6 +108,80 @@ func TestInstructionsSyncCreatesGeneratedOverride(t *testing.T) {
 	}
 	if !strings.Contains(string(overrideRaw), "GLOBAL-INSTRUCTIONS") {
 		t.Fatalf("expected generated override to include global instructions")
+	}
+}
+
+func TestExportImportRoundTrip(t *testing.T) {
+	_, cleanup := setupTempRepo(t)
+	defer cleanup()
+
+	if err := run([]string{"create", "default"}); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	sourceRigRoot := os.Getenv("CODEX_RIG_ROOT")
+	sourceHistory := filepath.Join(sourceRigRoot, "rigs", "default", "codex-home", "history", "session.log")
+	if err := os.MkdirAll(filepath.Dir(sourceHistory), 0o755); err != nil {
+		t.Fatalf("mkdir source history: %v", err)
+	}
+	if err := os.WriteFile(sourceHistory, []byte("backup-data"), 0o644); err != nil {
+		t.Fatalf("write source history: %v", err)
+	}
+
+	bundlePath := filepath.Join(t.TempDir(), "default.codex-rig.tgz")
+	if err := run([]string{"export", "--rig", "default", "--output", bundlePath}); err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+
+	targetRoot := filepath.Join(t.TempDir(), "imported-rig-root")
+	targetGlobal := filepath.Join(t.TempDir(), "imported-global-codex")
+	t.Setenv("CODEX_RIG_ROOT", targetRoot)
+	t.Setenv("CODEX_HOME", targetGlobal)
+
+	if err := run([]string{"import", "--set-current", bundlePath}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	importedConfig := filepath.Join(targetRoot, "rigs", "default", rig.ConfigFileName)
+	if _, err := os.Stat(importedConfig); err != nil {
+		t.Fatalf("expected imported rig config, err=%v", err)
+	}
+
+	importedHistory := filepath.Join(targetRoot, "rigs", "default", "codex-home", "history", "session.log")
+	importedRaw, err := os.ReadFile(importedHistory)
+	if err != nil {
+		t.Fatalf("read imported history: %v", err)
+	}
+	if string(importedRaw) != "backup-data" {
+		t.Fatalf("unexpected imported history data: %q", string(importedRaw))
+	}
+
+	currentRaw, err := os.ReadFile(filepath.Join(targetRoot, rig.CurrentRigFileName))
+	if err != nil {
+		t.Fatalf("read current rig file: %v", err)
+	}
+	if strings.TrimSpace(string(currentRaw)) != "default" {
+		t.Fatalf("unexpected current rig value: %q", string(currentRaw))
+	}
+
+	authPath := filepath.Join(targetRoot, "rigs", "default", "codex-home", "auth.json")
+	authInfo, err := os.Lstat(authPath)
+	if err != nil {
+		t.Fatalf("lstat imported auth: %v", err)
+	}
+	if authInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected imported auth.json to be symlink")
+	}
+	authTarget, err := os.Readlink(authPath)
+	if err != nil {
+		t.Fatalf("readlink imported auth: %v", err)
+	}
+	if !filepath.IsAbs(authTarget) {
+		authTarget = filepath.Clean(filepath.Join(filepath.Dir(authPath), authTarget))
+	}
+	expectedTarget := filepath.Join(targetGlobal, "auth.json")
+	if authTarget != expectedTarget {
+		t.Fatalf("unexpected imported auth target: got %s want %s", authTarget, expectedTarget)
 	}
 }
 

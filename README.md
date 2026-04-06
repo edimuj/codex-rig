@@ -185,11 +185,31 @@ codex-rig rc [show]
 codex-rig rc set <rig>
 codex-rig rc init [--rig <name>]
 codex-rig rc clear
+codex-rig export [--rig <name>] [--output <path>]
+codex-rig import [--name <name>] [--overwrite] [--set-current] <bundle>
 
 codex-rig doctor
 codex-rig diff [--rig <name>] [--all]
 codex-rig version
 ```
+
+## Backup and Transfer
+
+Export a rig as a portable bundle:
+
+```bash
+codex-rig export --rig build --output ./build.codex-rig.tgz
+```
+
+Import on another machine:
+
+```bash
+codex-rig import --set-current ./build.codex-rig.tgz
+```
+
+Notes:
+- Bundles include rig config and local rig files.
+- Symlinked entries are not bundled; policy is re-synced on import for the target machine.
 
 ## Install and Update
 
